@@ -491,11 +491,14 @@ func (s *CCEElbPlugin) consSvc(sc *cceElbConfig, pod *corev1.Pod, c client.Clien
 	}
 	svcAnnotations := make(map[string]string, 0)
 	for k, v := range sc.hwOptions {
+		if k == ElbIdsConfigName {
+			continue
+		}
 		svcAnnotations[k] = v
 	}
 	// add hash to svc, otherwise, the status of GS will remain in NetworkNotReady.
 	svcAnnotations[ElbConfigHashKey] = util.GetHash(sc)
-	
+
 	// Add ELB ID annotation
 	if lbId != "" {
 		svcAnnotations[ElbIdAnnotationKey] = lbId
