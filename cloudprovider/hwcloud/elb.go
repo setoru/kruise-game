@@ -106,6 +106,8 @@ const (
 	ElbL7FlavorIDAnnotationKey = "kubernetes.io/elb.l7-flavor-id"
 	ElbL7FlavorIDConfigName    = "ElbL7FlavorID"
 
+	ElbMappingPoolAnnotationKey = "kubernetes.io/elb.mapping.pool"
+
 	LBHealthCheckSwitchAnnotationKey = "kubernetes.io/elb.health-check-flag"
 	LBHealthCheckSwitchConfigName    = "LBHealthCheckFlag"
 

@@ -57,6 +57,7 @@ func init() {
 
 type cceElbConfig struct {
 	elbIds                    []string
+	elbMappings               map[string]string
 	targetPorts               []int
 	protocols                 []corev1.Protocol
 	isFixed                   bool
@@ -494,6 +495,26 @@ func (s *CCEElbPlugin) consSvc(sc *cceElbConfig, pod *corev1.Pod, c client.Clien
 	}
 	// add hash to svc, otherwise, the status of GS will remain in NetworkNotReady.
 	svcAnnotations[ElbConfigHashKey] = util.GetHash(sc)
+	
+	// Add ELB ID annotation
+	if lbId != "" {
+		svcAnnotations[ElbIdAnnotationKey] = lbId
+	}
+
+	// Add ELB mapping pool annotation if resource label is configured
+	if lbId != "" {
+		if resourceLabel, exists := sc.elbMappings[lbId]; exists && resourceLabel != "" {
+			svcAnnotations[ElbMappingPoolAnnotationKey] = resourceLabel
+		}
+	} else if sc.isAutoCreateElb() {
+		// For auto-created ELB, use the first available resource title if configured
+		for _, resourceLabel := range sc.elbMappings {
+			if resourceLabel != "" {
+				svcAnnotations[ElbMappingPoolAnnotationKey] = resourceLabel
+				break
+			}
+		}
+	}
 	svc := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            pod.GetName(),
@@ -622,27 +643,38 @@ func parseCCELbConfig(conf []gamekruiseiov1alpha1.NetworkConfParams) (*cceElbCon
 		isFixed:                   false,
 		externalTrafficPolicyType: corev1.ServiceExternalTrafficPolicyTypeCluster,
 		hwOptions:                 make(map[string]string),
+		elbMappings:               make(map[string]string),
 	}
 	specifyElbId := false
 	autoCreateElb := false
 	for _, c := range conf {
 		switch c.Name {
-		case ElbIdAnnotationKey:
+		case ElbIdsConfigName:
 			if autoCreateElb {
 				return nil, fmt.Errorf("%s and %s cannot be filled in simultaneously",
-					ElbIdAnnotationKey, ElbAutocreateAnnotationKey)
+					ElbIdsConfigName, ElbAutocreateAnnotationKey)
 			}
 			specifyElbId = true
-			// huawei only supports one elb id
 			if c.Value == "" {
 				return nil, fmt.Errorf("no elb id found, must specify at least one elb id")
 			}
-			res.elbIds = []string{c.Value}
+			elbIdsWithLabels := strings.Split(c.Value, ",")
+			res.elbMappings = make(map[string]string)
+			for _, elbIdWithLabel := range elbIdsWithLabels {
+				parts := strings.Split(elbIdWithLabel, "/")
+				if len(parts) == 2 {
+					res.elbIds = append(res.elbIds, parts[0])
+					res.elbMappings[parts[0]] = parts[1]
+				} else {
+					res.elbIds = append(res.elbIds, elbIdWithLabel)
+					res.elbMappings[elbIdWithLabel] = ""
+				}
+			}
 			res.hwOptions[c.Name] = c.Value
 		case ElbAutocreateAnnotationKey:
 			if specifyElbId {
 				return nil, fmt.Errorf("%s and %s cannot be filled in simultaneously",
-					ElbIdAnnotationKey, ElbAutocreateAnnotationKey)
+					ElbIdsConfigName, ElbAutocreateAnnotationKey)
 			}
 			autoCreateElb = true
 			res.hwOptions[c.Name] = c.Value
