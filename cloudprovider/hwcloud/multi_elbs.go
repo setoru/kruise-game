@@ -220,13 +220,19 @@ func (m *MultiElbsPlugin) OnPodUpdated(c client.Client, pod *corev1.Pod, ctx con
 	var servicesToUpdate []*corev1.Service
 	var servicesToCreate []*corev1.Service
 	var needNetworkNotReady bool
+	// Create a set to store expected Service names based on the new configuration
+	expectedSvcs := make(map[string]bool)
 
 	for _, lbId := range conf.idList[podLbsPorts.index] {
 		// get svc
 		lbName := conf.lbNames[lbId]
+		svcName := pod.GetName() + "-" + strings.ToLower(lbName)
+		// Mark this Service as expected
+		expectedSvcs[svcName] = true
+
 		svc := &corev1.Service{}
 		err = c.Get(ctx, types.NamespacedName{
-			Name:      pod.GetName() + "-" + strings.ToLower(lbName),
+			Name:      svcName,
 			Namespace: pod.GetNamespace(),
 		}, svc)
 		if err != nil {
@@ -287,6 +293,41 @@ func (m *MultiElbsPlugin) OnPodUpdated(c client.Client, pod *corev1.Pod, ctx con
 		return pod, nil
 	}
 
+	// Identify and delete orphaned Services that are no longer expected based on the new configuration
+	// List all Services owned by this Pod that belong to this plugin
+	svcList := &corev1.ServiceList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(pod.GetNamespace()),
+		client.MatchingLabels{ServiceBelongNetworkTypeKey: MultiElbsNetwork},
+	}
+	err = c.List(ctx, svcList, listOpts...)
+	if err != nil {
+		// Log the error but don't fail the entire update, as this is a cleanup step
+		log.Errorf("[%s] Failed to list Services for Pod %s/%s: %v", MultiElbsNetwork, pod.GetNamespace(), pod.GetName(), err)
+	} else {
+		for _, existingSvc := range svcList.Items {
+			// Check if the Service is owned by this Pod
+			isOwnedByPod := false
+			for _, ownerRef := range existingSvc.GetOwnerReferences() {
+				if ownerRef.Kind == "Pod" && ownerRef.UID == pod.UID {
+					isOwnedByPod = true
+					break
+				}
+			}
+			if isOwnedByPod {
+				if _, exists := expectedSvcs[existingSvc.GetName()]; !exists {
+					// This Service is an orphan, delete it
+					log.Infof("[%s] Deleting orphaned Service %s/%s for Pod %s/%s", MultiElbsNetwork, existingSvc.GetNamespace(), existingSvc.GetName(), pod.GetNamespace(), pod.GetName())
+					err := c.Delete(ctx, &existingSvc)
+					if err != nil && !errors.IsNotFound(err) {
+						// Log error but continue processing other services and the pod update
+						log.Errorf("[%s] Failed to delete orphaned Service %s/%s: %v", MultiElbsNetwork, existingSvc.GetNamespace(), existingSvc.GetName(), err)
+					}
+				}
+			}
+		}
+	}
+
 	// Process status check for remaining un-updated services
 	endPoints := ""
 	for i, lbId := range conf.idList[podLbsPorts.index] {
@@ -333,13 +374,17 @@ func (m *MultiElbsPlugin) OnPodUpdated(c client.Client, pod *corev1.Pod, ctx con
 		// allow not ready containers
 		if util.IsAllowNotReadyContainers(networkManager.GetNetworkConfig()) {
 			toUpDateSvc, err := utils.AllowNotReadyContainers(c, ctx, pod, svc, false)
+			log.Infof("AllowNotReadyContainers启用 for pod %s/%s", pod.GetNamespace(), pod.GetName())
 			if err != nil {
+				log.Infof("err:%v", err.Error())
 				return pod, err
 			}
 
 			if toUpDateSvc {
+				log.Infof("需要更新svc")
 				err := c.Update(ctx, svc)
 				if err != nil {
+					log.Infof("err:%v", err.Error())
 					return pod, cperrors.ToPluginError(err, cperrors.InternalError)
 				}
 			}
@@ -602,6 +647,7 @@ func (m *MultiElbsPlugin) allocate(conf *multiELBsConfig, nsName string) (*lbsPo
 				// Allocation is still valid
 				return m.podAllocate[nsName], nil
 			}
+
 		} else {
 			// Index out of bounds for new configuration - reallocate
 			// Deallocate current allocation

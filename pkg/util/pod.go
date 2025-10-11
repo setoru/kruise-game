@@ -19,6 +19,7 @@ package util
 import (
 	gameKruiseV1alpha1 "github.com/openkruise/kruise-game/apis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	log "k8s.io/klog/v2"
 )
 
 // GetPodConditionFromList extracts the provided condition from the given list of condition and
@@ -40,12 +41,14 @@ func IsContainersPreInplaceUpdating(pod *corev1.Pod, gss *gameKruiseV1alpha1.Gam
 	for _, actual := range pod.Status.ContainerStatuses {
 		for _, expect := range gss.Spec.GameServerTemplate.Spec.Containers {
 			if actual.Name == expect.Name && actual.Image != expect.Image {
+				log.Info("镜像%s:%s更新为%s:%s", actual.Name, actual.Image, expect.Name, expect.Image)
 				diffNames = append(diffNames, actual.Name)
 			}
 		}
 	}
 	for _, containerName := range containerNames {
 		if IsStringInList(containerName, diffNames) {
+			log.Info("AllowNotReadyContainers镜像原地升级")
 			return true
 		}
 	}

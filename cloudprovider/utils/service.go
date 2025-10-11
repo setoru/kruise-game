@@ -2,20 +2,22 @@ package utils
 
 import (
 	"context"
+	"strings"
+
 	kruisePub "github.com/openkruise/kruise-api/apps/pub"
 	gamekruiseiov1alpha1 "github.com/openkruise/kruise-game/apis/v1alpha1"
 	cperrors "github.com/openkruise/kruise-game/cloudprovider/errors"
 	"github.com/openkruise/kruise-game/pkg/util"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	log "k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"strings"
 )
 
 func AllowNotReadyContainers(c client.Client, ctx context.Context, pod *corev1.Pod, svc *corev1.Service, isSvcShared bool) (bool, cperrors.PluginError) {
 	// get lifecycleState
 	lifecycleState, exist := pod.GetLabels()[kruisePub.LifecycleStateKey]
-
+	log.Infof("lifecycleState为%s", lifecycleState)
 	// get gss
 	gss, err := util.GetGameServerSetOfPod(pod, c, ctx)
 	if err != nil {
@@ -33,20 +35,24 @@ func AllowNotReadyContainers(c client.Client, ctx context.Context, pod *corev1.P
 			}
 		}
 	}
-
+	log.Infof("allowNotReadyContainers为%v", allowNotReadyContainers)
 	// PreInplaceUpdating
 	if exist && lifecycleState == string(kruisePub.LifecycleStatePreparingUpdate) {
 		// ensure PublishNotReadyAddresses is true when containers pre-updating
 		if !svc.Spec.PublishNotReadyAddresses && util.IsContainersPreInplaceUpdating(pod, gss, allowNotReadyContainers) {
+			log.Info("设置PublishNotReadyAddresses为true")
 			svc.Spec.PublishNotReadyAddresses = true
 			return true, nil
 		}
 
 		// ensure remove finalizer
 		if svc.Spec.PublishNotReadyAddresses || !util.IsContainersPreInplaceUpdating(pod, gss, allowNotReadyContainers) {
+			log.Info("设置game.kruise.io/inplace-update-not-ready-blocker为false")
 			pod.GetLabels()[gamekruiseiov1alpha1.InplaceUpdateNotReadyBlocker] = "false"
 		}
 	} else {
+		log.Info("lifecycleState不为PreparingUpdate状态")
+		log.Info("设置game.kruise.io/inplace-update-not-ready-blocker为true")
 		pod.GetLabels()[gamekruiseiov1alpha1.InplaceUpdateNotReadyBlocker] = "true"
 		if !svc.Spec.PublishNotReadyAddresses {
 			return false, nil
@@ -75,8 +81,10 @@ func AllowNotReadyContainers(c client.Client, ctx context.Context, pod *corev1.P
 		} else {
 			_, condition := util.GetPodConditionFromList(pod.Status.Conditions, corev1.PodReady)
 			if condition == nil || condition.Status != corev1.ConditionTrue {
+				log.Info("pod未就绪")
 				return false, nil
 			}
+			log.Info("pod已就绪，设置PublishNotReadyAddresses为false")
 			svc.Spec.PublishNotReadyAddresses = false
 			return true, nil
 		}
